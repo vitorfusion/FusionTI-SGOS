@@ -1,0 +1,7 @@
+.env
+conftest.py
+/.pytest_cache
+/.vscode
+/__pycache__
+/appfs/__pycache__
+/tests

@@ -6757,6 +6757,59 @@ def create_app(config_override=None):
               "mensagem": str(e)
           }), 500
 
+  # ENDPOINT DE PROTEÇÃO DE SENHA
+
+  @v_app.route('/Usuario/upd/passwd/<int:id>', methods=['PUT'])
+  @login_required
+  def f_update_user_passwd(id):
+      """
+      Verifica e corrige a criptografia da senha de um usuário
+      ---
+      parameters:
+        - name: id
+          in: path
+          type: integer
+          required: true
+          description: ID único do usuário
+      responses:
+        200:
+          description:
+        404:
+          description:
+        500:
+          description:
+      """
+      try:
+          v_usuario = db.session.get(Usuario, id)
+
+          if not v_usuario:
+              return jsonify({"erro": "Não encontrado", "mensagem": f"Usuário de ID {id} não existe"}), 404
+
+          v_senha_atual = v_usuario.senha
+
+          # Hashes Werkzeug sempre iniciam com "pbkdf2:", "scrypt:" ou "sha256$"
+          v_prefixos_werkzeug = ('pbkdf2:', 'scrypt:', 'sha256$', 'sha1$')
+          v_ja_criptografada = v_senha_atual and v_senha_atual.startswith(v_prefixos_werkzeug)
+
+          if v_ja_criptografada:
+              return jsonify({
+                  "mensagem": "Senha já se encontra no padrão esperado",
+                  "id": id
+              }), 200
+
+          v_usuario.f_definir_senha(v_senha_atual)
+
+          db.session.flush()
+          db.session.commit()
+
+          return jsonify({
+              "mensagem": "Senha criptografada e salva com sucesso",
+              "id": id
+          }), 200
+      except Exception as e:
+          db.session.rollback()
+          return jsonify({"erro": "Erro interno", "mensagem": str(e)}), 500
+
   return v_app
 
 if __name__ == '__main__':
