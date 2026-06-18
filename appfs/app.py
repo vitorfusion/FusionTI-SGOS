@@ -5212,13 +5212,44 @@ def create_app(config_override=None):
   @login_required
   def f_read_all_os():
       """
-      Lista todas as ordens de serviço de uma empresa específica
+      Busca todas as ordens de serviço, ou busca por filtros se eles tiverem sido passados
       ---
       parameters:
-        - name: idempresa
-          in: query
-          type: integer
-          required: true
+        - name: body
+          in: body
+          required: false
+          schema:
+            type: object
+            properties:
+              dataconclusao:
+                oneOf:
+                  - type: string
+                    example: "22/05/2026"
+                  - type: array
+                    items:
+                      type: string
+                    example: ["20/05/2026", "25/05/2026"]
+              dataabertura:
+                oneOf:
+                  - type: string
+                    example: "19/05/2026"
+                  - type: array
+                    items:
+                      type: string
+                    example: ["15/05/2026", "20/05/2026"]
+              palavrachave:
+                type: string
+                example: "manutenção"
+              sprint:
+                type: integer
+                example: 2
+              idempresa:
+                type: integer
+                example: 1
+              estado:
+                type: integer
+                enum: [0, 1]
+                example: 1
       responses:
         200:
           description:
@@ -5227,17 +5258,117 @@ def create_app(config_override=None):
         500:
           description:
       """
+      v_dados = request.get_json(silent=True) or {}
+      
+      v_novos_filtros = ['dataconclusao', 'dataabertura', 'palavrachave', 'sprint', 'idempresa', 'estado']
+      v_usando_filtros = any(v_campo in v_dados for v_campo in v_novos_filtros)
+
       try:
-          v_id_empresa = request.args.get('idempresa')
+          # Fluxo padrão (caso nenhum filtro tenha sido enviado)
+          if not v_usando_filtros:
+              v_id_empresa = request.args.get('idempresa')
 
-          if not v_id_empresa:
-              return jsonify({"erro": "Requisição inválida", "mensagem": "O parâmetro idempresa é obrigatório"}), 400
+              if not v_id_empresa:
+                  return jsonify({"erro": "Requisição inválida", "mensagem": "O parâmetro idempresa é obrigatório"}), 400
 
-          # Busca as OSs daquela empresa, ordenando pelas mais recentes (data de abertura)
-          v_lista_os = OrdemServico.query.filter_by(idempresa=v_id_empresa).order_by(OrdemServico.dataabertura.desc()).all()
+              # Busca as OSs daquela empresa, ordenando pelas mais recentes (data de abertura)
+              v_lista_os = OrdemServico.query.filter_by(idempresa=v_id_empresa).order_by(OrdemServico.dataabertura.desc()).all()
 
-          return jsonify([v_item.f_para_dicionario() for v_item in v_lista_os]), 200
+              return jsonify([v_item.f_para_dicionario() for v_item in v_lista_os]), 200
+
+          # Fluxo com filtros
+          v_query = OrdemServico.query
+
+          # Filtro 1: data de conclusão
+          v_dataconclusao_raw = v_dados.get('dataconclusao')
+          if v_dataconclusao_raw:
+              if isinstance(v_dataconclusao_raw, list) and len(v_dataconclusao_raw) == 2:
+                  v_data_inicio = f_validar_data(v_dataconclusao_raw[0])
+                  v_data_fim = f_validar_data(v_dataconclusao_raw[1])
+                  if v_data_inicio and v_data_fim:
+                      v_query = v_query.filter(OrdemServico.dataconclusao.between(v_data_inicio, v_data_fim))
+              else:
+                  v_data_fixa = f_validar_data(v_dataconclusao_raw)
+                  if v_data_fixa:
+                      v_query = v_query.filter(OrdemServico.dataconclusao == v_data_fixa)
+
+          # Filtro 2: data de abertura
+          v_dataabertura_raw = v_dados.get('dataabertura')
+          if v_dataabertura_raw:
+              if isinstance(v_dataabertura_raw, list) and len(v_dataabertura_raw) == 2:
+                  v_data_inicio = f_validar_data(v_dataabertura_raw[0])
+                  v_data_fim = f_validar_data(v_dataabertura_raw[1])
+                  if v_data_inicio and v_data_fim:
+                      v_query = v_query.filter(OrdemServico.dataabertura.between(v_data_inicio, v_data_fim))
+              else:
+                  v_data_fixa = f_validar_data(v_dataabertura_raw)
+                  if v_data_fixa:
+                      v_query = v_query.filter(OrdemServico.dataabertura == v_data_fixa)
+
+          # Filtro 3: sprint (colaborador que estava com a OS)
+          v_sprint = v_dados.get('sprint')
+          if v_sprint is not None:
+              v_query = v_query.filter(OrdemServico.idcolaborador == v_sprint)
+
+          # Filtro 4: idempresa
+          v_idempresa = v_dados.get('idempresa')
+          if v_idempresa is not None:
+              v_query = v_query.filter(OrdemServico.idempresa == v_idempresa)
+
+          # Filtro 5: estado (aberto: 1, concluído: 0)
+          v_estado = v_dados.get('estado')
+          if v_estado is not None:
+              if v_estado == 1:
+                  v_query = v_query.filter(OrdemServico.estado == True)
+              elif v_estado == 0:
+                  v_query = v_query.filter(OrdemServico.estado == False)
+
+          v_resultado_os = v_query.all()
+          v_lista_ranking = []
+          
+          v_palavra_chave = v_dados.get('palavrachave')
+          v_termo_pesquisa = str(v_palavra_chave).lower().strip() if v_palavra_chave else None
+
+          for v_os in v_resultado_os:
+              v_movimentacoes = MovimentacaoOS.query.filter_by(idos=v_os.id).all()
+              v_contador_palavras = 0
+              
+              # Se uma palavra-chave foi fornecida, é feita a contagem quantificada
+              if v_termo_pesquisa:
+                  v_texto_predescricao = str(v_os.predescricao or "").lower()
+                  v_texto_descricao = str(v_os.descricao or "").lower()
+                  
+                  v_contador_palavras += v_texto_predescricao.count(v_termo_pesquisa)
+                  v_contador_palavras += v_texto_descricao.count(v_termo_pesquisa)
+                  
+                  for v_mov in v_movimentacoes:
+                      v_texto_mov = str(v_mov.descricao or "").lower()
+                      v_contador_palavras += v_texto_mov.count(v_termo_pesquisa)
+                  
+                  if v_contador_palavras == 0:
+                      continue
+              
+              v_lista_ranking.append({
+                  "os": v_os.id,
+                  "dataconclusao": v_os.dataconclusao.strftime('%d/%m/%Y') if v_os.dataconclusao else None,
+                  "contador de palavras-chave": v_contador_palavras
+              })
+
+          # Ordenação/ranking
+          import datetime as dt_mod
+          v_data_minima = dt_mod.date(1970, 1, 1)
+          
+          v_lista_ranking.sort(
+              key=lambda x: (
+                  x["contador de palavras-chave"],
+                  dt_mod.datetime.strptime(x["dataconclusao"], '%d/%m/%Y').date() if x["dataconclusao"] else v_data_minima
+              ),
+              reverse=True
+          )
+
+          return jsonify(v_lista_ranking), 200
       except Exception as e:
+          db.session.rollback()
           return jsonify({"erro": "Erro interno", "mensagem": str(e)}), 500
 
   @v_app.route('/Os/upd/<int:id>', methods=['PUT'])
